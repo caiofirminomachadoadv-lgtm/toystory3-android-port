@@ -1,0 +1,85 @@
+name: Build Toy Story 3 Z Fold4 APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout build files
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;22.1.7171670"
+
+      - name: Clone J2ME Loader 1.8.2
+        run: git clone --depth 1 --branch 1.8.2 https://github.com/nikita36078/J2ME-Loader.git j2me
+
+      - name: Decode Toy Story 3 and apply wrapper patches
+        run: |
+          base64 --decode game.jar.b64 > /tmp/toystory3.jar
+          test -s /tmp/toystory3.jar
+          unzip -t /tmp/toystory3.jar >/dev/null
+          cp /tmp/toystory3.jar j2me/app/src/main/assets/toystory3.jar
+          python3 patch.py
+          mkdir -p /tmp/gameicon j2me/app/src/main/res/drawable
+          (cd /tmp/gameicon && unzip -o /tmp/toystory3.jar i.png >/dev/null)
+          cp /tmp/gameicon/i.png j2me/app/src/main/res/drawable/toystory_icon.png
+
+      - name: Create release signing key
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/toystory3-release.keystore" \
+            -storepass 'ToyStory3Fold4Build' \
+            -keypass 'ToyStory3Fold4Build' \
+            -alias toystory3 \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Toy Story 3 Android Port, O=Private Build, C=BR"
+          cat > j2me/keystore.properties <<EOF
+          storeFile=$GITHUB_WORKSPACE/toystory3-release.keystore
+          storePassword=ToyStory3Fold4Build
+          keyAlias=toystory3
+          keyPassword=ToyStory3Fold4Build
+          EOF
+
+      - name: Build signed release APK
+        working-directory: j2me
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleOpenRelease --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p output
+          APK_PATH="$(find j2me/app/build/outputs/apk/open/release -name '*.apk' -type f | head -n1)"
+          test -n "$APK_PATH"
+          cp "$APK_PATH" output/ToyStory3-ZFold4-release.apk
+          test -s output/ToyStory3-ZFold4-release.apk
+          cp toystory3-release.keystore output/toystory3-release.keystore
+          sha256sum output/ToyStory3-ZFold4-release.apk > output/SHA256.txt
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToyStory3-ZFold4-APK
+          path: output/
+          if-no-files-found: error
+          compression-level: 0
